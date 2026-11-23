@@ -1,0 +1,11 @@
+{
+  "meta": {
+    "title": "Market alerts",
+    "description": "Watchlist and alert rules for A-shares, HK, US stocks and China futures; crossing-based triggers evaluated host-side with SSE push."
+  },
+  "panel": {
+    "watch": "Watchlist",
+    "rules": "Alert rules",
+    "events": "Alerts"
+  }
+}

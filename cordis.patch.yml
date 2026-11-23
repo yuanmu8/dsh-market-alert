@@ -1,0 +1,6 @@
+- insert:
+    - id: market-alert
+      name: dsh-market-alert
+      config:
+        pollIntervalMs: 5000
+        quoteRefreshMs: 4000

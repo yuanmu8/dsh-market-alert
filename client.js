@@ -335,9 +335,123 @@ window.__ModuleLoader__.load({
       ['1d', '日'], ['1w', '周'], ['1M', '月'],
     ]
 
+    // 副图指标下拉选项
+    const INDICATOR_OPTS = [
+      ['macd', 'MACD'],
+      ['kdj', 'KDJ'],
+      ['rsi', 'RSI'],
+      ['none', '隐藏副图'],
+    ]
+
+    function emaOf(values, n) {
+      const out = new Array(values.length).fill(null)
+      let sum = 0
+      for (let i = 0; i < values.length; i += 1) {
+        if (i < n) { sum += values[i]; if (i === n - 1) out[i] = sum / n; continue }
+        out[i] = out[i - 1] + (2 / (n + 1)) * (values[i] - out[i - 1])
+      }
+      return out
+    }
+
+    // MACD(12,26,9)：返回 dif / dea / hist（hist = 2*(dif-dea)）
+    function macdCalc(closes) {
+      const ema12 = emaOf(closes, 12)
+      const ema26 = emaOf(closes, 26)
+      const dif = closes.map((_, i) => (ema12[i] !== null && ema26[i] !== null ? ema12[i] - ema26[i] : null))
+      const valid = dif.map((v) => (v === null ? 0 : v))
+      const deaRaw = emaOf(valid, 9)
+      const dea = deaRaw.map((v, i) => (dif[i] === null ? null : v))
+      const hist = dif.map((v, i) => (v !== null && dea[i] !== null ? 2 * (v - dea[i]) : null))
+      return { dif, dea, hist }
+    }
+
+    // KDJ(9,3,3)：返回 k / d / j
+    function kdjCalc(bars) {
+      const n = 9
+      const k = new Array(bars.length).fill(null)
+      const d = new Array(bars.length).fill(null)
+      const j = new Array(bars.length).fill(null)
+      let pk = 50
+      let pd = 50
+      for (let i = 0; i < bars.length; i += 1) {
+        const from = Math.max(0, i - n + 1)
+        let hh = -Infinity
+        let ll = Infinity
+        for (let t = from; t <= i; t += 1) {
+          if (bars[t].h > hh) hh = bars[t].h
+          if (bars[t].l < ll) ll = bars[t].l
+        }
+        const rsv = hh === ll ? 50 : ((bars[i].c - ll) / (hh - ll)) * 100
+        pk = (2 / 3) * pk + (1 / 3) * rsv
+        pd = (2 / 3) * pd + (1 / 3) * pk
+        k[i] = pk; d[i] = pd; j[i] = 3 * pk - 2 * pd
+      }
+      return { k, d, j }
+    }
+
+    // RSI(n)：Wilder 平滑，返回三条 {name, values}
+    function rsiCalc(closes, periods = [6, 12, 24]) {
+      return periods.map((n) => {
+        const out = new Array(closes.length).fill(null)
+        let avgUp = 0
+        let avgDn = 0
+        for (let i = 1; i < closes.length; i += 1) {
+          const ch = closes[i] - closes[i - 1]
+          const up = Math.max(ch, 0)
+          const dn = Math.max(-ch, 0)
+          if (i <= n) {
+            avgUp += up / n
+            avgDn += dn / n
+            if (i === n) out[i] = avgDn === 0 ? 100 : 100 - 100 / (1 + avgUp / avgDn)
+          } else {
+            avgUp = (avgUp * (n - 1) + up) / n
+            avgDn = (avgDn * (n - 1) + dn) / n
+            out[i] = avgDn === 0 ? 100 : 100 - 100 / (1 + avgUp / avgDn)
+          }
+        }
+        return { name: `RSI${n}`, values: out, color: '#4a9eff' }
+      })
+    }
+
+    // 各副图指标的计算与绘制定义
+    const IND_SERIES = {
+      macd(bars) {
+        const closes = bars.map((b) => b.c)
+        const { dif, dea, hist } = macdCalc(closes)
+        return {
+          lines: [
+            { name: 'DIF', values: dif, color: '#e6b422' },
+            { name: 'DEA', values: dea, color: '#4a9eff' },
+          ],
+          hist: { values: hist, colorOf: (v) => (v >= 0 ? 'rgba(229,57,53,0.7)' : 'rgba(46,164,79,0.7)') },
+          fixed: null,
+        }
+      },
+      kdj(bars) {
+        const { k, d, j } = kdjCalc(bars)
+        return {
+          lines: [
+            { name: 'K', values: k, color: '#e6b422' },
+            { name: 'D', values: d, color: '#4a9eff' },
+            { name: 'J', values: j, color: '#c655e0' },
+          ],
+          hist: null,
+          fixed: [-10, 110],
+        }
+      },
+      rsi(bars) {
+        return {
+          lines: rsiCalc(bars.map((b) => b.c)),
+          hist: null,
+          fixed: [0, 100],
+        }
+      },
+    }
+
     function ChartTab({ watchlist, events, defaultSymbol, onSymbolChange }) {
       const [symbol, setSymbol] = React.useState(defaultSymbol)
       const [period, setPeriod] = React.useState('15m')
+      const [indicator, setIndicator] = React.useState('macd')
       const [bars, setBars] = React.useState(null)
       const [quote, setQuote] = React.useState(null)
       const [error, setError] = React.useState('')
@@ -411,9 +525,12 @@ window.__ModuleLoader__.load({
         const maxV = Math.max(...view.map((b) => b.v ?? 0), 1)
         const padR = 56
         const padB = 20
-        const priceH = height * 0.72 - 12
-        const volTop = height * 0.72 + 4
-        const volH = height - volTop - padB
+        const hasInd = indicator !== 'none' && IND_SERIES[indicator]
+        const priceH = (hasInd ? height * 0.52 : height * 0.72) - 12
+        const volTop = (hasInd ? height * 0.52 : height * 0.72) + 4
+        const volH = hasInd ? height * 0.13 : height - volTop - padB
+        const indTop = volTop + volH + 8
+        const indH = height - indTop - padB
         const flatMas = maSeries.flat().filter((v) => v !== null && Number.isFinite(v))
         let hi = Math.max(...highs, ...flatMas)
         let lo = Math.min(...lows, ...flatMas)
@@ -437,11 +554,89 @@ window.__ModuleLoader__.load({
           g.fillText(Number(v).toFixed(v > 500 ? 0 : 2), width - padR + 4, y + 3)
         }
 
-        // 成交量
+        // 成交量（锚定成交量区底部，不与副图重叠）
+        const volBottom = volTop + volH
         for (let i = 0; i < view.length; i += 1) {
           const vh = ((view[i].v ?? 0) / maxV) * volH
           g.fillStyle = view[i].c >= view[i].o ? 'rgba(229,57,53,0.55)' : 'rgba(46,164,79,0.55)'
-          g.fillRect(xOf(i) - bw / 2, height - padB - vh, bw, vh)
+          g.fillRect(xOf(i) - bw / 2, volBottom - vh, bw, vh)
+        }
+
+        // 副图指标窗格（MACD / KDJ / RSI）
+        if (hasInd) {
+          const def = IND_SERIES[indicator](view)
+          // 面板底色与分隔线
+          g.fillStyle = 'rgba(127,127,127,0.05)'
+          g.fillRect(0, indTop, width - padR, indH)
+          g.strokeStyle = 'rgba(127,127,127,0.25)'
+          g.beginPath(); g.moveTo(0, indTop - 4); g.lineTo(width - padR, indTop - 4); g.stroke()
+
+          let ihi = -Infinity
+          let ilo = Infinity
+          const all = def.lines.flatMap((l) => l.values).concat(def.hist ? def.hist.values : [])
+          for (const v of all) {
+            if (v !== null && Number.isFinite(v)) {
+              if (v > ihi) ihi = v
+              if (v < ilo) ilo = v
+            }
+          }
+          if (def.fixed) { ilo = def.fixed[0]; ihi = def.fixed[1] }
+          if (!Number.isFinite(ihi) || !Number.isFinite(ilo)) { ihi = 1; ilo = 0 }
+          let ispan = ihi - ilo
+          if (ispan <= 0) { ispan = Math.abs(ihi) * 0.1 || 1; ilo -= ispan / 2; ihi += ispan / 2 }
+          const pad = ispan * 0.08
+          ilo -= pad; ihi += pad
+          const iyOf = (v) => indTop + indH * (1 - (v - ilo) / (ihi - ilo))
+
+          // 副图数值轴
+          g.strokeStyle = 'rgba(127,127,127,0.18)'
+          g.fillStyle = 'rgba(127,127,127,0.85)'
+          for (let k2 = 0; k2 <= 2; k2 += 1) {
+            const v = ilo + ((ihi - ilo) * k2) / 2
+            const y = iyOf(v)
+            g.beginPath(); g.moveTo(0, y); g.lineTo(width - padR, y); g.stroke()
+            g.fillText(Number(v).toFixed(Math.abs(ihi) < 10 ? 2 : 0), width - padR + 4, y + 3)
+          }
+          // 零轴
+          if (ilo < 0 && ihi > 0) {
+            g.strokeStyle = 'rgba(127,127,127,0.3)'
+            g.beginPath(); g.moveTo(0, iyOf(0)); g.lineTo(width - padR, iyOf(0)); g.stroke()
+          }
+
+          // 柱状（MACD 红绿柱）
+          if (def.hist) {
+            const mh = Math.max(Math.abs(iyOf(0) - indTop), iyOf(0) - indTop, 1)
+            for (let i = 0; i < view.length; i += 1) {
+              const v = def.hist.values[i]
+              if (v === null || !Number.isFinite(v)) continue
+              const hgt = Math.abs(iyOf(v) - iyOf(0))
+              g.fillStyle = def.hist.colorOf(v)
+              g.fillRect(xOf(i) - bw / 2, v >= 0 ? iyOf(0) - hgt : iyOf(0), bw, hgt)
+            }
+          }
+
+          // 指标线
+          for (const line of def.lines) {
+            g.strokeStyle = line.color
+            g.lineWidth = 1
+            g.beginPath()
+            let started = false
+            for (let i = 0; i < line.values.length; i += 1) {
+              const v = line.values[i]
+              if (v === null || !Number.isFinite(v)) { started = false; continue }
+              if (!started) { g.moveTo(xOf(i), iyOf(v)); started = true } else g.lineTo(xOf(i), iyOf(v))
+            }
+            g.stroke()
+          }
+
+          // 面板标题与悬停值
+          const hi = hover !== null && hover >= 0 && hover < view.length ? hover : view.length - 1
+          const label = def.lines.map((l) => {
+            const v = l.values[hi]
+            return `${l.name} ${v !== null && v !== undefined && Number.isFinite(v) ? v.toFixed(2) : '—'}`
+          }).join(' ')
+          g.fillStyle = 'rgba(127,127,127,0.9)'
+          g.fillText(`${indicator.toUpperCase()}  ${label}`, 4, indTop + 11)
         }
 
         // 蜡烛（红涨绿跌）
@@ -509,7 +704,7 @@ window.__ModuleLoader__.load({
         g.fillText(tAt(0), 2, height - 6)
         g.fillText(tAt(Math.floor(view.length / 2)), width / 2 - 24, height - 6)
         g.fillText(tAt(view.length - 1), width - padR - 70, height - 6)
-      }, [bars, hover, markers])
+      }, [bars, hover, markers, indicator])
 
       // 头部信息行：悬停 bar 或最新 bar 的 OHLC + MA
       const viewNow = bars ? bars.slice(-120) : null
@@ -553,6 +748,13 @@ window.__ModuleLoader__.load({
               style: { ...S.btn, ...(period === val ? { borderColor: T.brand, color: T.brand } : {}) },
               onClick: () => setPeriod(val),
             }, label)),
+            h('select', {
+              style: { ...S.input, appearance: 'auto', width: 96, maxWidth: 96 },
+              value: indicator,
+              onChange: (e) => setIndicator(e.target.value),
+              title: 'K 线下方的副图指标',
+            },
+              ...INDICATOR_OPTS.map(([val, label]) => h('option', { key: val, value: val }, label))),
             h('button', { style: S.btn, onClick: load, disabled: loading }, loading ? '刷新中…' : '刷新'),
             quote ? h('span', { style: { marginLeft: 'auto', fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12 } },
               `${Number(quote.price).toFixed(2)} `,

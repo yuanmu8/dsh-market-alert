@@ -2,6 +2,33 @@
 
 股票 / 期货 / 期权告警系统 DSH 插件（P0 最小可用闭环）。
 
+## 安装（DeepSeek Harness）
+
+**方式一：从源码安装（推荐）**
+
+```powershell
+git clone https://github.com/yuanmu8/dsh-market-alert.git
+```
+
+克隆后在任意 DSH 会话里对 Agent 说：
+
+> 帮我安装插件：`<克隆路径>/dsh-market-alert`（plugin_manager install_bundle）
+
+安装返回 `applied` 后，**刷新一次 Web 页面**，侧栏出现「行情告警」图标即完成。
+
+**方式二：从 Release zip 安装**
+
+到 [Releases](https://github.com/yuanmu8/dsh-market-alert/releases) 下载
+`dsh-market-alert-vX.Y.Z.zip`，解压到任意目录（路径不要含空格更稳妥），
+再按方式一第 2 步对 Agent 说该解压目录即可。
+
+**说明**
+
+- 插件无运行时依赖，Node 版随 DSH 宿主。
+- 规则与自选持久化在宿主侧 `~/.dsh/market-alert/state.json`，换浏览器、重启 DSH 不丢失；删除该文件即重置。
+- 行情数据来自腾讯 / 新浪公开接口，免 token；期货 K 线走新浪期货接口。
+- 卸载：DSH 插件管理里移除 `dsh-market-alert` bundle 即可。
+
 ## 能力
 
 - **多市场自选**：A 股（沪深北）、港股、美股、国内期货（商品 + 金融），代码/名称/拼音搜索添加（W-01）。

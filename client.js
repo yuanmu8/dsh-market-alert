@@ -27,16 +27,23 @@ window.__ModuleLoader__.load({
       down: '#2da44e',
     }
 
-    const KIND_LABEL = {
-      price_above: '价格 ≥',
-      price_below: '价格 ≤',
-      pct_above: '涨幅 ≥',
-      pct_below: '跌幅 ≤',
-      macd_golden: 'MACD 金叉',
-      macd_dead: 'MACD 死叉',
-      kdj_j_above: 'KDJ J ≥',
-      kdj_j_below: 'KDJ J ≤',
-    }
+    // 条件下拉的分组（optgroup）：[组名, [[kind, 中文label], ...]]
+    const KIND_GROUPS = [
+      ['价格类', [['price_above', '价格 ≥'], ['price_below', '价格 ≤'], ['pct_above', '涨幅 ≥'], ['pct_below', '跌幅 ≤']]],
+      ['MACD', [['macd_golden', 'MACD 金叉'], ['macd_dead', 'MACD 死叉']]],
+      ['KDJ', [['kdj_j_above', 'KDJ J ≥'], ['kdj_j_below', 'KDJ J ≤']]],
+      ['RSI', [['rsi_above', 'RSI 上穿'], ['rsi_below', 'RSI 下穿']]],
+      ['BOLL', [['boll_touch_upper', 'BOLL 触及上轨'], ['boll_touch_low', 'BOLL 触及下轨'], ['boll_break_upper', 'BOLL 突破上轨'], ['boll_break_low', 'BOLL 跌破下轨']]],
+      ['均线', [['ma_cross_up', 'MA 金叉'], ['ma_cross_down', 'MA 死叉'], ['price_cross_ma_up', '价格上穿 MA'], ['price_cross_ma_down', '价格下穿 MA']]],
+    ]
+    const KIND_LABEL = Object.fromEntries(KIND_GROUPS.flatMap(([, items]) => items))
+    // 不需要周期的只有纯报价类条件；其余（MACD/KDJ/RSI/BOLL/均线）都要 K 线周期
+    const NO_PERIOD_KINDS = new Set(['price_above', 'price_below', 'pct_above', 'pct_below'])
+    // 价格上穿/下穿 MA 的阈值就是 MA 的 N
+    const MA_THRESHOLD_KINDS = new Set(['price_cross_ma_up', 'price_cross_ma_down'])
+    const needsThreshold = (kind) => MA_THRESHOLD_KINDS.has(kind) || /^(price_|pct_|kdj_|rsi_)/.test(kind)
+    const needsPeriod = (kind) => !NO_PERIOD_KINDS.has(kind)
+    const DEFAULT_GROUP = '默认'
     // 周期统一定义见下方 PERIOD_BTNS（1分–月），规则页与 K 线页共用
     const MARKET_TAG = { A: 'A股', HK: '港股', US: '美股', CNF: '期货' }
 
@@ -82,11 +89,48 @@ window.__ModuleLoader__.load({
       return v === null || v === undefined || !Number.isFinite(v) ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`
     }
 
-    function ruleText(rule) {
-      const period = ['macd_golden', 'macd_dead', 'kdj_j_above', 'kdj_j_below'].includes(rule.kind) ? ` · ${rule.period}` : ''
-      const thr = rule.threshold != null && rule.threshold !== 0 ? ` ${rule.threshold}` : ''
-      return `${KIND_LABEL[rule.kind] ?? rule.kind}${thr}${period}`
+    // 单个条件的可读文本；fast/slow/rsiPeriod 取规则级参数
+    function condText(cond, owner) {
+      const kind = cond?.kind ?? ''
+      let text = KIND_LABEL[kind] ?? kind
+      if (kind.startsWith('ma_cross')) text += `(${owner?.maFast ?? 5}/${owner?.maSlow ?? 20})`
+      if (kind.startsWith('rsi_')) text += `(${owner?.rsiPeriod ?? 14})`
+      if (needsThreshold(kind) && cond.threshold != null && cond.threshold !== 0) text += ` ${cond.threshold}`
+      if (needsPeriod(kind) && cond.period) text += ` · ${cond.period}`
+      return text
     }
+
+    // 规则全文：主条件 + 附加条件，按 AND / OR 拼接
+    function ruleText(rule) {
+      const extra = Array.isArray(rule.extra) ? rule.extra : []
+      const parts = [condText(rule, rule), ...extra.map((c) => condText(c, rule))]
+      return parts.join(rule.logic === 'OR' ? ' 或 ' : ' 且 ')
+    }
+
+    // 相对时间：如「3 分钟前」；空值显示「未触发过」
+    function relTime(ts) {
+      if (!ts) return '未触发过'
+      const diff = Date.now() - new Date(ts).getTime()
+      if (!Number.isFinite(diff)) return '未触发过'
+      if (diff < 60_000) return '刚刚'
+      if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`
+      if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`
+      if (diff < 30 * 86_400_000) return `${Math.floor(diff / 86_400_000)} 天前`
+      return new Date(ts).toLocaleDateString()
+    }
+
+    const PHASE_LABEL = { ARMED: '监控中', TRIGGERED: '待确认', COOLING: '冷却中', DISABLED: '已停用' }
+    function phaseOf(rule) {
+      if (rule.enabled === false) return 'DISABLED'
+      const phase = rule.state?.phase
+      return phase && PHASE_LABEL[phase] ? phase : 'ARMED'
+    }
+    const phaseColor = (phase) => (phase === 'ARMED' ? T.ok : phase === 'TRIGGERED' ? T.err : T.muted)
+
+    // 选中态样式：只有当前项有边框，其余透明（同 ChartTab 周期按钮）
+    const selStyle = (active) => (active
+      ? { borderColor: T.brand, color: T.brand, fontWeight: 500 }
+      : { borderColor: 'transparent', color: T.muted })
 
     function App() {
       const [tab, setTab] = React.useState('watch')
@@ -98,6 +142,7 @@ window.__ModuleLoader__.load({
       const [searchKey, setSearchKey] = React.useState('')
       const [hits, setHits] = React.useState([])
       const [form, setForm] = React.useState(null) // 预填的规则表单
+      const [editing, setEditing] = React.useState(null) // 正在编辑的规则（null 表示未编辑）
       const [chartSymbol, setChartSymbol] = React.useState(null) // K 线页当前标的
 
       const refresh = React.useCallback(async () => {
@@ -110,6 +155,13 @@ window.__ModuleLoader__.load({
       }, [])
 
       React.useEffect(() => { refresh() }, [refresh])
+
+      // 成功提示不常驻：3 秒后自动消失（错误 / 告警提示保留）
+      React.useEffect(() => {
+        if (!notice || notice.tone !== 'ok') return undefined
+        const timer = setTimeout(() => setNotice(null), 3000)
+        return () => clearTimeout(timer)
+      }, [notice])
 
       // 告警流：独立 SSE 连接，页面隐藏时由浏览器保持
       React.useEffect(() => {
@@ -195,7 +247,6 @@ window.__ModuleLoader__.load({
         setForm(null)
         await refresh()
       })
-
       const toggleRule = (rule) => run('toggle', async () => {
         await call('rule.update', { id: rule.id, enabled: !rule.enabled })
         await refresh()
@@ -203,6 +254,50 @@ window.__ModuleLoader__.load({
 
       const deleteRule = (rule) => run('del', async () => {
         await call('rule.delete', { id: rule.id })
+        setNotice({ tone: 'ok', text: `已删除规则：${rule.name}` })
+        if (editing?.id === rule.id) setEditing(null)
+        await refresh()
+      })
+
+      // 保存编辑：payload = { id, ...fields }，由 RuleForm 组装
+      const updateRule = (payload) => run('rule', async () => {
+        const res = await call('rule.update', payload)
+        setNotice({ tone: 'ok', text: `规则已更新：${(res.rule ?? payload).name ?? ''} ${res.rule ? ruleText(res.rule) : ''}`.trim() })
+        setEditing(null)
+        await refresh()
+      })
+
+      // 编辑入口：优先用 rule.get 回填（含 state），接口不可用时退回 state 里的规则对象
+      const openEdit = (rule) => run('get', async () => {
+        let full = rule
+        try {
+          const res = await call('rule.get', { id: rule.id })
+          if (res.rule) full = { ...rule, ...res.rule, state: res.state ?? res.rule.state ?? rule.state }
+        } catch { /* 接口未就绪：用列表数据回填 */ }
+        setForm(null)
+        setEditing(full)
+      })
+
+      const toggleMany = (ids, enabled) => run('many', async () => {
+        await call('rule.toggleMany', { ids, enabled })
+        setNotice({ tone: 'ok', text: `已批量${enabled ? '启用' : '停用'} ${ids.length} 条规则` })
+        await refresh()
+      })
+
+      const deleteMany = (ids) => run('many', async () => {
+        const results = await Promise.allSettled(ids.map((id) => call('rule.delete', { id })))
+        const failed = results.filter((r) => r.status === 'rejected').length
+        if (failed) setNotice({ tone: 'err', text: `批量删除：成功 ${ids.length - failed} 条，失败 ${failed} 条` })
+        else setNotice({ tone: 'ok', text: `已批量删除 ${ids.length} 条规则` })
+        if (editing && ids.includes(editing.id)) setEditing(null)
+        await refresh()
+      })
+
+      const setWatchGroup = async (symbol, group) => call('watch.setGroup', { symbol, group })
+
+      const groupToggle = (group, enabled) => run('group', async () => {
+        await call('group.toggle', { group, enabled })
+        setNotice({ tone: 'ok', text: `分组「${group}」的规则已批量${enabled ? '启用' : '停用'}` })
         await refresh()
       })
 
@@ -219,6 +314,7 @@ window.__ModuleLoader__.load({
 
       const startAlert = (w) => {
         setTab('rules')
+        setEditing(null)
         setForm({ symbol: w.symbol, name: w.name, kind: 'price_above', threshold: '', period: '15m', mode: 'once', cooldownMin: 5 })
       }
 
@@ -246,8 +342,8 @@ window.__ModuleLoader__.load({
         notice ? h('div', { style: { border: `1px solid ${notice.tone === 'ok' ? T.ok : notice.tone === 'warn' ? T.brand : T.err}`, borderRadius: 8, padding: '7px 11px', marginBottom: 10, fontSize: 12.5, whiteSpace: 'pre-wrap' } }, notice.text) : null,
 
         tab === 'watch' ? h(WatchTab, {
-          watchlist, quotes, data, busy, searchKey, setSearchKey, hits,
-          doSearch, addWatch, removeWatch, startAlert, refresh,
+          watchlist, quotes, data, groups: data?.groups, busy, searchKey, setSearchKey, hits,
+          doSearch, addWatch, removeWatch, startAlert, refresh, setWatchGroup, groupToggle,
         }) : null,
 
         tab === 'chart' ? h(ChartTab, {
@@ -256,7 +352,8 @@ window.__ModuleLoader__.load({
         }) : null,
 
         tab === 'rules' ? h(RulesTab, {
-          rules, data, form, setForm, busy, addRule, toggleRule, deleteRule,
+          rules, data, watchlist, form, setForm, editing, setEditing, openEdit, busy,
+          addRule, updateRule, toggleRule, deleteRule, toggleMany, deleteMany,
         }) : null,
 
         tab === 'events' ? h(EventsTab, {
@@ -266,7 +363,49 @@ window.__ModuleLoader__.load({
     }
 
     function WatchTab(props) {
-      const { watchlist, quotes, busy, searchKey, setSearchKey, hits, doSearch, addWatch, removeWatch, startAlert, data } = props
+      const {
+        watchlist, quotes, busy, searchKey, setSearchKey, hits, doSearch, addWatch, removeWatch, startAlert, data,
+        groups, setWatchGroup, groupToggle,
+      } = props
+      const [groupFilter, setGroupFilter] = React.useState('') // '' = 全部
+      const [manageOpen, setManageOpen] = React.useState(false)
+      const [picked, setPicked] = React.useState([]) // 选中的自选 symbol
+      const [groupPick, setGroupPick] = React.useState('')
+      const [newGroup, setNewGroup] = React.useState('')
+      const [groupErr, setGroupErr] = React.useState('')
+      // 分组列表由 Host 的 state.groups 提供；未上线（undefined / 空）时从自选的 group 字段兜底推导
+      const safeGroups = React.useMemo(() => {
+        if (Array.isArray(groups) && groups.length) return groups
+        const acc = new Map()
+        for (const w of watchlist) {
+          const g = w.group || DEFAULT_GROUP
+          const item = acc.get(g) ?? { group: g, symbols: 0, rules: 0, enabledRules: 0 }
+          item.symbols += 1
+          const own = (data?.rules ?? []).filter((r) => r.symbol === w.symbol)
+          item.rules += own.length
+          item.enabledRules += own.filter((r) => r.enabled).length
+          acc.set(g, item)
+        }
+        return [...acc.values()]
+      }, [groups, watchlist, data?.rules])
+
+      const togglePick = (sym) => setPicked((prev) => (prev.includes(sym) ? prev.filter((s) => s !== sym) : [...prev, sym]))
+      const shown = watchlist.filter((w) => !groupFilter || (w.group || DEFAULT_GROUP) === groupFilter)
+      const shownPicked = picked.filter((s) => shown.some((w) => w.symbol === s))
+
+      // 给选中标的设置分组：新分组名优先，否则用下拉里选的现有分组
+      const applyGroup = async () => {
+        const target = newGroup.trim().slice(0, 16) || groupPick
+        if (!target) { setGroupErr('请选择现有分组或输入新分组名'); return }
+        if (!shownPicked.length) { setGroupErr('请先勾选标的'); return }
+        setGroupErr('')
+        const results = await Promise.allSettled(shownPicked.map((sym) => setWatchGroup(sym, target)))
+        const failed = results.filter((r) => r.status === 'rejected')
+        if (failed.length) setGroupErr(`设置失败 ${failed.length} 个：${failed[0].reason?.message ?? failed[0].reason}`)
+        else { setNewGroup(''); setPicked([]) }
+        await props.refresh()
+      }
+
       return h('div', null,
         h('div', { style: { ...S.card } },
           h('div', { style: S.row },
@@ -288,15 +427,74 @@ window.__ModuleLoader__.load({
           h('div', { style: { ...S.spread, marginBottom: 6 } },
             h('span', { style: S.title }, '自选列表'),
             h('span', { style: S.muted }, `${watchlist.length} 个标的 · 快照自动推送`)),
+
+          // 分组标签行：「全部」+ 各分组；只有当前分组有边框
+          h('div', { style: { ...S.row, flexWrap: 'wrap', marginBottom: 4 } },
+            h('button', {
+              key: '__all',
+              style: { ...S.btn, ...selStyle(!groupFilter) },
+              onClick: () => setGroupFilter(''),
+            }, `全部 ${watchlist.length}`),
+            ...safeGroups.map((g) => h('button', {
+              key: g.group,
+              style: { ...S.btn, ...selStyle(groupFilter === g.group) },
+              onClick: () => setGroupFilter(g.group),
+              title: `${g.symbols ?? 0} 个标的 · ${g.enabledRules ?? 0}/${g.rules ?? 0} 条规则启用`,
+            }, `${g.group} ${g.symbols ?? ''}`)),
+            h('button', {
+              style: { ...S.btn, marginLeft: 'auto', ...selStyle(manageOpen) },
+              onClick: () => setManageOpen((v) => !v),
+            }, manageOpen ? '收起分组管理 ▴' : '管理分组 ▾')),
+
+          manageOpen
+            ? h('div', { style: { border: `1px dashed ${T.border}`, borderRadius: 8, padding: '6px 10px', marginBottom: 8 } },
+                h('div', { style: { ...S.row, flexWrap: 'wrap' } },
+                  h('span', { style: S.muted }, `已勾选 ${shownPicked.length} 个标的`),
+                  h('select', {
+                    style: { ...S.input, appearance: 'auto', width: 140, maxWidth: 140 },
+                    value: groupPick, onChange: (e) => setGroupPick(e.target.value),
+                    title: '选择现有分组',
+                  },
+                    h('option', { value: '' }, '选择现有分组…'),
+                    ...safeGroups.map((g) => h('option', { key: g.group, value: g.group }, g.group))),
+                  h('span', { style: S.muted }, '或'),
+                  h('input', {
+                    style: { ...S.input, width: 140, maxWidth: 140 }, value: newGroup, maxLength: 16,
+                    placeholder: '输入新分组名', onChange: (e) => setNewGroup(e.target.value),
+                  }),
+                  h('button', {
+                    style: S.btnBrand, disabled: Boolean(busy) || !shownPicked.length,
+                    onClick: applyGroup,
+                  }, '设置分组')),
+                groupErr ? h('div', { style: { ...S.muted, color: T.err, marginTop: 4 } }, groupErr) : null,
+                h('div', { style: { ...S.muted, marginTop: 6, marginBottom: 2 } }, '整组批量启停（作用于该分组下所有标的的规则）：'),
+                ...safeGroups.map((g) => h('div', { key: `mg-${g.group}`, style: { ...S.row, justifyContent: 'space-between' } },
+                  h('span', null, g.group, h('span', { style: { ...S.muted, marginLeft: 8 } }, `${g.symbols ?? 0} 标的 · ${g.enabledRules ?? 0}/${g.rules ?? 0} 启用`)),
+                  h('div', { style: { display: 'flex', gap: 6 } },
+                    h('button', { style: S.btn, disabled: Boolean(busy), onClick: () => groupToggle(g.group, true) }, '批量启用规则'),
+                    h('button', { style: S.btn, disabled: Boolean(busy), onClick: () => groupToggle(g.group, false) }, '批量停用规则')))))
+            : null,
+
           watchlist.length === 0
             ? h('div', { style: S.muted }, '还没有自选标的，用上方搜索添加。')
-            : h('div', null,
-                ...watchlist.map((w) => {
+            : (shown.length === 0
+              ? h('div', { style: S.muted }, `分组「${groupFilter}」下没有标的。`)
+              : h('div', null,
+                ...shown.map((w) => {
                   const q = quotes[w.symbol]
+                  const groupName = w.group || DEFAULT_GROUP
                   return h('div', { key: w.symbol, style: { ...S.row, justifyContent: 'space-between', borderTop: `1px solid ${T.border}`, paddingTop: 6 } },
-                    h('div', { style: { minWidth: 0 } },
-                      h('span', { style: { fontWeight: 500 } }, w.name),
+                    h('div', { style: { minWidth: 0, display: 'flex', alignItems: 'center' } },
+                      h('input', {
+                        type: 'checkbox', checked: picked.includes(w.symbol), title: '勾选后可在「管理分组」里设置分组',
+                        onChange: () => togglePick(w.symbol),
+                      }),
+                      h('span', { style: { fontWeight: 500, marginLeft: 6 } }, w.name),
                       h('span', { style: { ...S.muted, marginLeft: 8, fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 11 } }, w.symbol),
+                      // 「默认」分组不显示胶囊，避免满屏噪音
+                      groupName !== DEFAULT_GROUP
+                        ? h('span', { style: { ...S.pill, marginLeft: 6, fontSize: 10, color: T.brand, borderColor: T.brand }, title: '分组' }, groupName)
+                        : null,
                       q?.degraded ? h('span', { style: { ...S.pill, marginLeft: 6, fontSize: 10, color: T.muted } }, '备源') : null),
                     h('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } },
                       h('span', { style: { fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12.5 } },
@@ -314,7 +512,7 @@ window.__ModuleLoader__.load({
                           removeWatch(w, n > 0)
                         },
                       }, '删除')))
-                }))))
+                })))))
     }
 
     function smaOf(closes, period) {
@@ -782,77 +980,364 @@ window.__ModuleLoader__.load({
             `▲ 标记 = 告警触发位置（未确认橙色 / 已确认灰色）。当前周期 ${period}，每 15 秒自动刷新。`)))
     }
 
-    function RulesTab({ rules, data, form, setForm, busy, addRule, toggleRule, deleteRule }) {
-      const set = (k) => (e) => setForm((prev) => ({ ...prev, [k]: e.target.value }))
-      const needsThreshold = !['macd_golden', 'macd_dead'].includes(form?.kind)
-      const needsPeriod = ['macd_golden', 'macd_dead', 'kdj_j_above', 'kdj_j_below'].includes(form?.kind)
+    // 标的选择：默认从自选列表搜索选择（文本框过滤 + 列表），「手动输入」切换后直接填 symbol
+    function SymbolPicker({ watchlist, value, name, onChange }) {
+      const [manual, setManual] = React.useState(() => !watchlist.some((w) => w.symbol === value))
+      const [query, setQuery] = React.useState('')
+      const [open, setOpen] = React.useState(false)
+      const current = watchlist.find((w) => w.symbol === value)
+      const labelOf = (w) => `${w.name}（${w.symbol}）`
+      const kw = query.trim().toLowerCase()
+      const list = kw
+        ? watchlist.filter((w) => w.symbol.toLowerCase().includes(kw) || (w.name ?? '').toLowerCase().includes(kw)).slice(0, 8)
+        : watchlist.slice(0, 8)
+      const inputText = query || (current ? labelOf(current) : '')
+      if (manual) {
+        return h('div', { style: { display: 'flex', gap: 6, alignItems: 'center', flex: 1 } },
+          h('input', {
+            style: S.input, value, placeholder: '600519.SH / RB2610 / 00700 / AAPL',
+            onChange: (e) => onChange(e.target.value.trim(), ''),
+          }),
+          h('button', { style: S.btn, onClick: () => setManual(false) }, '从自选选择'))
+      }
+      return h('div', { style: { display: 'flex', gap: 6, alignItems: 'center', flex: 1, position: 'relative' } },
+        h('input', {
+          style: S.input, value: inputText, placeholder: '输入名称 / 代码过滤自选…', autoComplete: 'off',
+          onFocus: () => setOpen(true),
+          onBlur: () => setTimeout(() => { setOpen(false); setQuery('') }, 150),
+          onChange: (e) => {
+            setQuery(e.target.value)
+            // 文本不再是当前选中项的标签 → 视为未选择
+            if (!(current && labelOf(current) === e.target.value)) onChange('', '')
+          },
+        }),
+        h('button', { style: S.btn, onClick: () => setManual(true) }, '手动输入'),
+        open
+          ? h('div', {
+              style: {
+                position: 'absolute', top: '100%', left: 0, right: 72, zIndex: 10, marginTop: 2, maxHeight: 220, overflow: 'auto',
+                background: T.card, border: `1px solid ${T.border}`, borderRadius: 8, padding: 4,
+              },
+            },
+              list.length
+                ? list.map((w) => h('div', {
+                    key: w.symbol,
+                    style: {
+                      ...S.row, padding: '4px 8px', borderRadius: 6, cursor: 'pointer',
+                      color: w.symbol === value ? T.brand : T.text,
+                      fontWeight: w.symbol === value ? 500 : 400,
+                    },
+                    onMouseDown: (e) => { e.preventDefault(); onChange(w.symbol, w.name) },
+                  },
+                  w.name,
+                  h('span', { style: { ...S.muted, marginLeft: 8, fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 11 } }, w.symbol),
+                  w.group && w.group !== DEFAULT_GROUP ? h('span', { style: { ...S.pill, marginLeft: 8, fontSize: 10 } }, w.group) : null))
+                : h('div', { style: { ...S.muted, padding: '4px 8px' } }, '无匹配的自选标的，可切换「手动输入」'))
+          : null)
+    }
+
+    // 新建 / 编辑共用的规则表单；initial 为字段初值，onSubmit(payload) 由调用方决定走 rule.add 还是 rule.update
+    function RuleForm({ initial, watchlist, busy, busyTag, submitLabel, onSubmit, onCancel }) {
+      const [f, setF] = React.useState(initial)
+      const [error, setError] = React.useState('')
+      const [advOpen, setAdvOpen] = React.useState(false)
+      const set = (k) => (e) => setF((prev) => ({ ...prev, [k]: e.target.value }))
+      const setExtra = (i, k) => (e) => setF((prev) => ({ ...prev, extra: prev.extra.map((c, j) => (j === i ? { ...c, [k]: e.target.value } : c)) }))
+      const addExtra = () => setF((prev) => ((prev.extra ?? []).length >= 4
+        ? prev
+        : { ...prev, extra: [...(prev.extra ?? []), { kind: 'price_above', threshold: '', period: '15m' }] }))
+      const removeExtra = (i) => setF((prev) => ({ ...prev, extra: (prev.extra ?? []).filter((_, j) => j !== i) }))
+
+      const conds = [{ kind: f.kind, threshold: f.threshold, period: f.period }, ...(f.extra ?? [])]
+      const hasRsi = conds.some((c) => c.kind.startsWith('rsi_'))
+      const hasMa = conds.some((c) => c.kind.startsWith('ma_cross') || c.kind.startsWith('price_cross_ma'))
+
+      const kindSelect = (value, handler, width) => h('select', { style: { ...S.input, appearance: 'auto', width, maxWidth: width }, value, onChange: handler },
+        ...KIND_GROUPS.map(([group, items]) => h('optgroup', { key: group, label: group },
+          ...items.map(([k, label]) => h('option', { key: k, value: k }, label)))))
+      const thresholdInput = (kind, value, handler, width) => h('input', {
+        style: { ...S.input, width, maxWidth: width }, type: 'number', step: 'any', value, onChange: handler,
+        placeholder: kind.startsWith('pct_') ? '如 5 表示 5%'
+          : kind.startsWith('rsi_') ? '0–100，如 70'
+            : MA_THRESHOLD_KINDS.has(kind) ? 'MA 的 N，如 20'
+              : kind.startsWith('kdj_') ? 'J 值，可为负' : '价格阈值',
+      })
+      const periodSelect = (value, handler, width) => h('select', { style: { ...S.input, appearance: 'auto', width, maxWidth: width }, value, onChange: handler },
+        ...PERIOD_BTNS.map(([val, label]) => h('option', { key: val, value: val }, label)))
+
+      const submit = () => {
+        const symbol = (f.symbol ?? '').trim()
+        if (!symbol) { setError('请选择或输入标的'); return }
+        for (let i = 0; i < conds.length; i += 1) {
+          const c = conds[i]
+          const tag = i === 0 ? '主条件' : `附加条件 ${i}`
+          if (needsPeriod(c.kind) && !c.period) { setError(`${tag}：请选择周期`); return }
+          if (needsThreshold(c.kind)) {
+            const raw = String(c.threshold ?? '').trim()
+            // 只要求是有限数字；KDJ J 值允许负数，不做正负限制
+            if (raw === '' || !Number.isFinite(Number(raw))) { setError(`${tag}：阈值必须是数字`); return }
+          }
+        }
+        if (hasMa) {
+          const fast = Number(f.maFast)
+          const slow = Number(f.maSlow)
+          if (!(Number.isInteger(fast) && fast >= 2) || !(Number.isInteger(slow) && slow >= 3) || fast >= slow) {
+            setError('高级：MA 快线 / 慢线需为整数，且 快线 < 慢线'); return
+          }
+        }
+        if (hasRsi && !(Number.isInteger(Number(f.rsiPeriod)) && Number(f.rsiPeriod) >= 2)) { setError('高级：RSI 周期需为 ≥ 2 的整数'); return }
+        const extra = (f.extra ?? []).map((c) => ({
+          kind: c.kind,
+          threshold: needsThreshold(c.kind) ? Number(c.threshold) : 0,
+          // 周期始终上送（Host 会校验取值），非指标类条件下引擎不使用它
+          period: c.period || '15m',
+          fast: Number(f.maFast), slow: Number(f.maSlow),
+        }))
+        const payload = {
+          symbol, kind: f.kind,
+          threshold: needsThreshold(f.kind) ? Number(f.threshold) : 0,
+          period: f.period || '15m',
+          mode: f.mode, cooldownMin: Number(f.cooldownMin) || 5,
+        }
+        const nm = (f.name ?? '').trim()
+        if (nm) payload.name = nm
+        if (extra.length) { payload.logic = f.logic; payload.extra = extra }
+        if (hasRsi) payload.rsiPeriod = Number(f.rsiPeriod) || 14
+        if (hasMa) { payload.maFast = Number(f.maFast) || 5; payload.maSlow = Number(f.maSlow) || 20 }
+        setError('')
+        onSubmit(payload)
+      }
+
+      const label = (text) => h('label', { style: { ...S.muted, minWidth: 52 } }, text)
       return h('div', null,
-        h('div', { style: S.card },
-          h('div', { style: S.title }, '新建告警规则'),
-          !form
-            ? h('div', { style: S.muted }, '在自选页点「设告警」预填标的，或直接在下方输入。')
-            : h('div', null,
-                h('div', { style: S.row },
-                  h('label', { style: { ...S.muted, minWidth: 52 } }, '标的'),
-                  h('input', { style: S.input, value: form.symbol, onChange: set('symbol'), placeholder: '600519.SH / RB2610 / 00700 / AAPL' })),
-                h('div', { style: S.row },
-                  h('label', { style: { ...S.muted, minWidth: 52 } }, '条件'),
-                  h('select', { style: { ...S.input, appearance: 'auto' }, value: form.kind, onChange: set('kind') },
-                    ...Object.entries(KIND_LABEL).map(([k, label]) => h('option', { key: k, value: k }, label)))),
-                needsThreshold
-                  ? h('div', { style: S.row },
-                      h('label', { style: { ...S.muted, minWidth: 52 } }, '阈值'),
-                      h('input', { style: S.input, type: 'number', step: 'any', value: form.threshold, onChange: set('threshold'), placeholder: form.kind.startsWith('pct_') ? '如 5 表示 5%' : '价格阈值' }))
-                  : null,
-                needsPeriod
-                  ? h('div', { style: S.row },
-                      h('label', { style: { ...S.muted, minWidth: 52 } }, '周期'),
-                      h('select', { style: { ...S.input, appearance: 'auto' }, value: form.period, onChange: set('period') },
-                        ...PERIOD_BTNS.map(([val, label]) => h('option', { key: val, value: val }, label))))
-                  : null,
-                h('div', { style: S.row },
-                  h('label', { style: { ...S.muted, minWidth: 52 } }, '触发'),
-                  h('select', { style: { ...S.input, appearance: 'auto' }, value: form.mode, onChange: set('mode') },
-                    h('option', { value: 'once' }, '一次（确认后重新武装）'),
-                    h('option', { value: 'every' }, '循环（冷却后自动重新武装）'))),
-                form.mode === 'every'
-                  ? h('div', { style: S.row },
-                      h('label', { style: { ...S.muted, minWidth: 52 } }, '冷却'),
-                      h('input', { style: S.input, type: 'number', value: form.cooldownMin, onChange: set('cooldownMin'), placeholder: '分钟' }),
-                      h('span', { style: S.muted }, '分钟'))
-                  : null,
-                h('div', { style: { ...S.row, justifyContent: 'flex-end', marginTop: 6 } },
-                  h('button', { style: S.btn, onClick: () => setForm(null) }, '取消'),
-                  h('button', {
-                    style: S.btnBrand, disabled: Boolean(busy),
-                    onClick: () => addRule({
-                      symbol: form.symbol, name: form.name, kind: form.kind,
-                      threshold: needsThreshold ? Number(form.threshold) : 0,
-                      period: form.period, mode: form.mode,
-                      cooldownMin: Number(form.cooldownMin) || 5,
-                    }),
-                  }, busy === 'rule' ? '创建中…' : '创建规则')))),
+        h('div', { style: S.row }, label('标的'),
+          h(SymbolPicker, {
+            watchlist, value: f.symbol ?? '', name: f.name,
+            onChange: (symbol, name) => setF((prev) => ({ ...prev, symbol, name: name || '' })),
+          })),
+        h('div', { style: S.row }, label('名称'),
+          h('input', { style: S.input, value: f.name ?? '', onChange: set('name'), placeholder: '留空则用标的代码' })),
+
+        // 条件组头部：AND / OR 切换（只在有附加条件时有意义）
+        h('div', { style: { ...S.spread, marginTop: 6 } },
+          h('span', { style: S.muted }, `条件组（${conds.length}/5）`),
+          h('div', { style: { display: 'flex', gap: 4 } },
+            ...['AND', 'OR'].map((op) => h('button', {
+              key: op,
+              style: { ...S.btn, ...selStyle(f.logic === op) },
+              title: op === 'AND' ? '全部条件满足才触发' : '任一条件满足即触发',
+              onClick: () => setF((prev) => ({ ...prev, logic: op })),
+            }, op === 'AND' ? '且 AND' : '或 OR')))),
+        h('div', { style: S.row }, label('主条件'),
+          kindSelect(f.kind, set('kind'), 170),
+          needsThreshold(f.kind) ? thresholdInput(f.kind, f.threshold, set('threshold'), 110) : null,
+          needsPeriod(f.kind) ? periodSelect(f.period, set('period'), 80) : null,
+          h('span', { style: { ...S.pill, fontSize: 10, color: T.muted } }, `${f.logic ?? 'AND'} 逻辑`)),
+        ...((f.extra ?? []).map((c, i) => h('div', { key: `extra-${i}`, style: { ...S.row, paddingLeft: 12 } },
+          label(`条件 ${i + 2}`),
+          kindSelect(c.kind, setExtra(i, 'kind'), 170),
+          needsThreshold(c.kind) ? thresholdInput(c.kind, c.threshold, setExtra(i, 'threshold'), 110) : null,
+          needsPeriod(c.kind) ? periodSelect(c.period, setExtra(i, 'period'), 80) : null,
+          h('button', { style: { ...S.btn, color: T.err }, title: '删除此条件', onClick: () => removeExtra(i) }, '×')))),
+        (f.extra ?? []).length < 4
+          ? h('div', { style: { ...S.row, paddingLeft: 64 } },
+              h('button', { style: { ...S.btn, color: T.brand, borderColor: 'transparent' }, onClick: addExtra }, '+ 添加条件'))
+          : null,
+
+        h('div', { style: S.row }, label('触发'),
+          h('select', { style: { ...S.input, appearance: 'auto', width: 220, maxWidth: 220 }, value: f.mode, onChange: set('mode') },
+            h('option', { value: 'once' }, '一次（确认后重新武装）'),
+            h('option', { value: 'every' }, '循环（冷却后自动重新武装）'))),
+        f.mode === 'every'
+          ? h('div', { style: S.row }, label('冷却'),
+              h('input', { style: { ...S.input, width: 90, maxWidth: 90 }, type: 'number', min: 1, value: f.cooldownMin, onChange: set('cooldownMin') }),
+              h('span', { style: S.muted }, '分钟'))
+          : null,
+
+        // 高级：指标参数，仅在对应 kind 出现时显示对应项
+        h('div', { style: { ...S.row } }, label('高级'),
+          h('button', { style: { ...S.btn, ...selStyle(advOpen) }, onClick: () => setAdvOpen((v) => !v) },
+            advOpen ? '收起指标参数 ▴' : '展开指标参数 ▾')),
+        advOpen
+          ? h('div', { style: { ...S.row, paddingLeft: 64, flexWrap: 'wrap', gap: 12 } },
+              hasRsi
+                ? h('span', { style: { ...S.row, padding: 0 } }, 'RSI 周期',
+                    h('input', { style: { ...S.input, width: 64, maxWidth: 64 }, type: 'number', min: 2, value: f.rsiPeriod, onChange: set('rsiPeriod') }))
+                : null,
+              hasMa
+                ? h('span', { style: { ...S.row, padding: 0 } }, 'MA 快线',
+                    h('input', { style: { ...S.input, width: 64, maxWidth: 64 }, type: 'number', min: 2, value: f.maFast, onChange: set('maFast') }),
+                    '慢线',
+                    h('input', { style: { ...S.input, width: 64, maxWidth: 64 }, type: 'number', min: 3, value: f.maSlow, onChange: set('maSlow') }))
+                : null,
+              !hasRsi && !hasMa ? h('span', { style: S.muted }, '当前条件没有可调的指标参数（RSI / MA 类条件才有）') : null)
+          : null,
+
+        error ? h('div', { style: { ...S.muted, color: T.err, marginTop: 6 } }, error) : null,
+        h('div', { style: { ...S.row, justifyContent: 'flex-end', marginTop: 6 } },
+          h('button', { style: S.btn, onClick: onCancel }, '取消'),
+          h('button', { style: S.btnBrand, disabled: Boolean(busy), onClick: submit }, busy === busyTag ? '保存中…' : submitLabel)))
+    }
+
+    const EMPTY_FORM = {
+      symbol: '', name: '', kind: 'price_above', threshold: '', period: '15m', mode: 'once', cooldownMin: 5,
+      logic: 'AND', extra: [], rsiPeriod: 14, maFast: 5, maSlow: 20,
+    }
+    // 把已有规则转成表单初值（字符串化以便受控输入）
+    function formFromRule(rule) {
+      const extra = Array.isArray(rule.extra) ? rule.extra : []
+      return {
+        ...EMPTY_FORM,
+        symbol: rule.symbol ?? '', name: rule.name ?? '', kind: rule.kind ?? 'price_above',
+        threshold: rule.threshold != null && rule.threshold !== 0 ? String(rule.threshold) : '',
+        period: rule.period || '15m', mode: rule.mode ?? 'once', cooldownMin: rule.cooldownMin ?? 5,
+        logic: rule.logic === 'OR' ? 'OR' : 'AND',
+        extra: extra.map((c) => ({
+          kind: c?.kind ?? 'price_above',
+          threshold: c?.threshold != null && c.threshold !== 0 ? String(c.threshold) : '',
+          period: c?.period || rule.period || '15m',
+        })),
+        rsiPeriod: rule.rsiPeriod ?? 14, maFast: rule.maFast ?? 5, maSlow: rule.maSlow ?? 20,
+      }
+    }
+
+    const STATUS_FILTERS = [['', '全部状态'], ['ARMED', '监控中'], ['TRIGGERED', '待确认'], ['COOLING', '冷却中'], ['DISABLED', '已停用']]
+
+    function RulesTab({
+      rules, data, watchlist, form, setForm, editing, setEditing, openEdit, busy,
+      addRule, updateRule, toggleRule, deleteRule, toggleMany, deleteMany,
+    }) {
+      const [fSymbol, setFSymbol] = React.useState('')
+      const [fStatus, setFStatus] = React.useState('')
+      const [kw, setKw] = React.useState('')
+      const [picked, setPicked] = React.useState([]) // 选中的规则 id
+
+      const livePicked = picked.filter((id) => rules.some((r) => r.id === id))
+      const word = kw.trim().toLowerCase()
+      const filtered = rules.filter((r) => {
+        if (fSymbol && r.symbol !== fSymbol) return false
+        if (fStatus && phaseOf(r) !== fStatus) return false
+        if (word && !`${r.name ?? ''} ${r.symbol ?? ''}`.toLowerCase().includes(word)) return false
+        return true
+      })
+      const filteredIds = filtered.map((r) => r.id)
+      const allPicked = filteredIds.length > 0 && filteredIds.every((id) => livePicked.includes(id))
+      const togglePick = (id) => setPicked((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
+      const toggleAll = () => setPicked((prev) => (allPicked ? prev.filter((id) => !filteredIds.includes(id)) : [...new Set([...prev, ...filteredIds])]))
+
+      const confirmDeleteMany = () => {
+        if (!livePicked.length) return
+        if (!window.confirm(`确定删除选中的 ${livePicked.length} 条规则？此操作不可撤销。`)) return
+        setPicked([])
+        deleteMany(livePicked)
+      }
+      const confirmDelete = (rule) => {
+        if (!window.confirm(`确定删除规则「${rule.name}」（${ruleText(rule)}）？`)) return
+        deleteRule(rule)
+      }
+
+      const symbolOptions = () => {
+        const symbols = [...new Set([...watchlist.map((w) => w.symbol), ...rules.map((r) => r.symbol)])]
+        return symbols.map((sym) => {
+          const w = watchlist.find((x) => x.symbol === sym)
+          return h('option', { key: sym, value: sym }, w ? `${w.name}（${sym}）` : sym)
+        })
+      }
+
+      const editingRule = editing ? rules.find((r) => r.id === editing.id) ?? editing : null
+      const showCreate = Boolean(form) && !editingRule
+
+      return h('div', null,
+        // 表单卡片：编辑优先，其次新建（自选页「设告警」预填）
+        editingRule
+          ? h('div', { style: S.card },
+              h('div', { style: S.spread, marginBottom: 6 },
+                h('span', { style: S.title }, `编辑规则：${editingRule.name}`),
+                h('span', { style: { ...S.pill, fontSize: 10, color: T.muted } }, editingRule.symbol)),
+              h(RuleForm, {
+                key: editingRule.id, initial: formFromRule(editingRule), watchlist, busy, busyTag: 'rule',
+                submitLabel: '保存修改', onSubmit: (payload) => updateRule({ id: editingRule.id, ...payload }),
+                onCancel: () => setEditing(null),
+              }))
+          : h('div', { style: S.card },
+              h('div', { style: S.title }, '新建告警规则'),
+              !showCreate
+                ? h('div', { style: { ...S.spread } },
+                    h('span', { style: S.muted }, '在自选页点「设告警」预填标的，或点此处直接新建。'),
+                    h('button', { style: S.btn, onClick: () => setForm({ ...EMPTY_FORM }) }, '＋ 新建规则'))
+                : h(RuleForm, {
+                    key: `new-${form.symbol ?? ''}`, initial: { ...EMPTY_FORM, ...form, extra: [...(form.extra ?? [])] }, watchlist, busy, busyTag: 'rule',
+                    submitLabel: '创建规则', onSubmit: addRule, onCancel: () => setForm(null),
+                  })),
 
         h('div', { style: S.card },
           h('div', { style: S.spread, marginBottom: 6 },
             h('span', { style: S.title }, '规则列表'),
-            h('span', { style: S.muted }, `${rules.length}/${data?.maxRules ?? 500}`)),
+            h('span', { style: S.muted }, `${rules.length}/${data?.maxRules ?? 500}${filtered.length !== rules.length ? ` · 筛选出 ${filtered.length}` : ''}`)),
+
+          // 筛选行：标的 / 状态 / 关键词（纯客户端过滤）
+          h('div', { style: { ...S.row, flexWrap: 'wrap' } },
+            h('select', {
+              style: { ...S.input, appearance: 'auto', width: 170, maxWidth: 170 }, value: fSymbol,
+              onChange: (e) => setFSymbol(e.target.value),
+            }, h('option', { value: '' }, '全部标的'), ...symbolOptions()),
+            ...STATUS_FILTERS.map(([val, label]) => h('button', {
+              key: val || '__all',
+              style: { ...S.btn, ...selStyle(fStatus === val) },
+              onClick: () => setFStatus(val),
+            }, label)),
+            h('input', {
+              style: { ...S.input, width: 160, maxWidth: 160 }, value: kw, placeholder: '搜索名称 / 代码',
+              onChange: (e) => setKw(e.target.value),
+            })),
+
+          // 批量操作条：有选中项时出现
+          livePicked.length
+            ? h('div', { style: { ...S.row, marginTop: 6, padding: '4px 8px', background: T.card, border: `1px solid ${T.brand}`, borderRadius: 8 } },
+                h('span', { style: { color: T.brand, fontSize: 12 } }, `已选 ${livePicked.length} 条`),
+                h('button', { style: S.btnBrand, disabled: Boolean(busy), onClick: () => { toggleMany(livePicked, true); setPicked([]) } }, '批量启用'),
+                h('button', { style: S.btn, disabled: Boolean(busy), onClick: () => { toggleMany(livePicked, false); setPicked([]) } }, '批量停用'),
+                h('button', { style: { ...S.btn, color: T.err }, disabled: Boolean(busy), onClick: confirmDeleteMany }, `批量删除（${livePicked.length} 条）`),
+                h('button', { style: { ...S.btn, borderColor: 'transparent', color: T.muted }, onClick: () => setPicked([]) }, '取消选择'))
+            : null,
+
+          // 表头：全选
           rules.length === 0
             ? h('div', { style: S.muted }, '暂无规则。')
-            : h('div', null,
-                ...rules.map((rule) => {
+            : h('div', { style: { ...S.row, ...S.muted, marginTop: 4 } },
+                h('input', { type: 'checkbox', checked: allPicked, disabled: !filteredIds.length, title: '全选（当前筛选结果）', onChange: toggleAll }),
+                h('span', null, filtered.length ? `${filtered.length} 条` : '无匹配规则（调整筛选条件试试）')),
+
+          filtered.length
+            ? h('div', null,
+                ...filtered.map((rule) => {
                   const st = rule.state ?? {}
-                  return h('div', { key: rule.id, style: { ...S.row, justifyContent: 'space-between', borderTop: `1px solid ${T.border}`, paddingTop: 6 } },
-                    h('div', null,
-                      h('span', { style: { fontWeight: 500 } }, rule.name),
-                      h('span', { style: { ...S.muted, marginLeft: 8, fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 11 } }, rule.symbol),
-                      h('span', { style: { marginLeft: 10, fontSize: 12 } }, ruleText(rule)),
-                      h('span', { style: { ...S.pill, marginLeft: 10, fontSize: 10, color: st.phase === 'ARMED' ? T.ok : st.phase === 'TRIGGERED' ? T.err : T.muted } },
-                        st.phase === 'ARMED' ? '监控中' : st.phase === 'TRIGGERED' ? '待确认' : st.phase === 'COOLING' ? '冷却中' : '已停用')),
-                    h('div', { style: { display: 'flex', gap: 6 } },
-                      h('button', { style: S.btn, disabled: Boolean(busy), onClick: () => toggleRule(rule) }, rule.enabled ? '停用' : '启用'),
-                      h('button', { style: { ...S.btn, color: T.err }, disabled: Boolean(busy), onClick: () => deleteRule(rule) }, '删除')))
-                }))))
+                  const phase = phaseOf(rule)
+                  const titleRow = h('div', { style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6 } },
+                    h('span', { style: { fontWeight: 500 } }, rule.name),
+                    h('span', { style: { ...S.muted, fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 11 } }, rule.symbol),
+                    h('span', { style: { ...S.pill, fontSize: 10, color: phaseColor(phase) } }, PHASE_LABEL[phase]))
+                  // 条件组完整摘要：优先 Host 的 ruleSummary，缺省用本地 ruleText
+                  const meta = [
+                    `周期 ${needsPeriod(rule.kind) ? rule.period : '—'}`,
+                    rule.mode === 'every' ? `循环 / 冷却 ${rule.cooldownMin ?? 5} 分` : '单次',
+                    `最近触发 ${relTime(st.lastTriggeredAt)}`,
+                    Array.isArray(rule.extra) && rule.extra.length ? `${rule.extra.length + 1} 个条件（${rule.logic ?? 'AND'}）` : '',
+                  ].filter(Boolean).join(' · ')
+                  const body = h('div', { style: { minWidth: 0 } },
+                    titleRow,
+                    h('div', { style: { fontSize: 12, marginTop: 2 } }, rule.summary || ruleText(rule)),
+                    h('div', { style: { ...S.muted, marginTop: 2, fontSize: 11 } }, meta))
+                  const main = h('div', { style: { display: 'flex', alignItems: 'flex-start', minWidth: 0, flex: 1, gap: 6 } },
+                    h('input', { type: 'checkbox', checked: livePicked.includes(rule.id), style: { marginTop: 3 }, onChange: () => togglePick(rule.id) }),
+                    body)
+                  const actions = h('div', { style: { display: 'flex', gap: 6 } },
+                    h('button', { style: S.btn, disabled: Boolean(busy), onClick: () => openEdit(rule) }, busy === 'get' ? '读取中…' : '编辑'),
+                    h('button', { style: S.btn, disabled: Boolean(busy), onClick: () => toggleRule(rule) }, rule.enabled ? '停用' : '启用'),
+                    h('button', { style: { ...S.btn, color: T.err }, disabled: Boolean(busy), onClick: () => confirmDelete(rule) }, '删除'))
+                  return h('div', { key: rule.id, style: { ...S.row, justifyContent: 'space-between', borderTop: `1px solid ${T.border}`, paddingTop: 6 } }, main, actions)
+                }))
+            : null))
     }
 
     function EventsTab({ events, busy, ackEvent, clearEvents }) {

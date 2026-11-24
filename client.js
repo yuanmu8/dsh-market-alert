@@ -37,7 +37,7 @@ window.__ModuleLoader__.load({
       kdj_j_above: 'KDJ J ≥',
       kdj_j_below: 'KDJ J ≤',
     }
-    const PERIODS = ['1m', '5m', '15m', '30m', '60m', '1d']
+    // 周期统一定义见下方 PERIOD_BTNS（1分–月），规则页与 K 线页共用
     const MARKET_TAG = { A: 'A股', HK: '港股', US: '美股', CNF: '期货' }
 
     async function call(method, payload = {}) {
@@ -808,7 +808,7 @@ window.__ModuleLoader__.load({
                   ? h('div', { style: S.row },
                       h('label', { style: { ...S.muted, minWidth: 52 } }, '周期'),
                       h('select', { style: { ...S.input, appearance: 'auto' }, value: form.period, onChange: set('period') },
-                        ...PERIODS.map((p) => h('option', { key: p, value: p }, p))))
+                        ...PERIOD_BTNS.map(([val, label]) => h('option', { key: val, value: val }, label))))
                   : null,
                 h('div', { style: S.row },
                   h('label', { style: { ...S.muted, minWidth: 52 } }, '触发'),

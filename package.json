@@ -1,6 +1,6 @@
 {
   "name": "dsh-market-alert",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Stocks/futures options alert panel: watchlist, price/MACD/KDJ alert rules with cross-trigger semantics, host-side evaluation and SSE push.",
   "license": "MIT",
   "private": true,
@@ -19,6 +19,7 @@
     "lib/store.js",
     "lib/engine.js",
     "test/shared.test.mjs",
+    "test/datasource.test.mjs",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",

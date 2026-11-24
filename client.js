@@ -747,7 +747,13 @@ window.__ModuleLoader__.load({
               })),
             ...PERIOD_BTNS.map(([val, label]) => h('button', {
               key: val,
-              style: { ...S.btn, ...(period === val ? { borderColor: T.brand, color: T.brand } : {}) },
+              style: {
+                ...S.btn,
+                // 只有当前周期显示边框，其余按钮无框（避免一排都像被选中）
+                ...(period === val
+                  ? { borderColor: T.brand, color: T.brand, fontWeight: 500 }
+                  : { borderColor: 'transparent', color: T.muted }),
+              },
               onClick: () => setPeriod(val),
             }, label)),
             h('select', {

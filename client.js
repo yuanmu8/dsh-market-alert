@@ -167,7 +167,9 @@ window.__ModuleLoader__.load({
 
       const addWatch = (hit) => run('watch', async () => {
         await call('watch.add', { symbol: hit.symbol, name: hit.name })
-        setNotice({ tone: 'ok', text: `已加入自选：${hit.name}（${hit.symbol}）` })
+        // 添加成功后收起搜索结果与搜索词：入口自动隐藏，反馈由自选列表本身承担
+        setHits([])
+        setSearchKey('')
         await refresh()
       })
 

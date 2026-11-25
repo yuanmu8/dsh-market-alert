@@ -449,7 +449,7 @@ export function apply(ctx, config) {
             const period = String(p.period ?? '15m')
             const count = Math.max(30, Math.min(500, Number(p.count) || 180))
             if (!normalizeSymbol(symbol)) return send({ ok: false, error: `无法识别的标的：${symbol}` }, 400)
-            const bars = await engine.provider.bars(symbol, period, count)
+            const bars = await engine.provider.bars(symbol, period, count, { keepForming: true })
             let quote = null
             try { quote = await engine.provider.quote(symbol) } catch { /* 快照失败不影响 K 线 */ }
             return send({ ok: true, symbol, period, bars, quote })

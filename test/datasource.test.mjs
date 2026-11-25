@@ -6,6 +6,18 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { parseTencent, normalizeSymbol } from '../lib/datasource.js'
 
+test('ETF / LOF 号段归一化（v0.2.1）', () => {
+  // 沪市基金：50 封基、51/56/58 ETF
+  assert.deepEqual(normalizeSymbol('510300'), { kind: 'A', symbol: '510300.SH', lower: 'sh510300', tx: 'sh510300' })
+  assert.deepEqual(normalizeSymbol('sh588000'), { kind: 'A', symbol: '588000.SH', lower: 'sh588000', tx: 'sh588000' })
+  assert.deepEqual(normalizeSymbol('501000.SH'), { kind: 'A', symbol: '501000.SH', lower: 'sh501000', tx: 'sh501000' })
+  // 深市 ETF/LOF：15/16
+  assert.deepEqual(normalizeSymbol('159915'), { kind: 'A', symbol: '159915.SZ', lower: 'sz159915', tx: 'sz159915' })
+  assert.deepEqual(normalizeSymbol('161725.SZ'), { kind: 'A', symbol: '161725.SZ', lower: 'sz161725', tx: 'sz161725' })
+  // 带后缀 / 前缀的写法同样成立
+  assert.equal(normalizeSymbol('SH510300').symbol, '510300.SH')
+})
+
 // 构造两段腾讯响应：sh601688（华泰证券 17.23）与 sz300006（莱美药业 9.0）
 const body = '"1~华泰证券~601688~17.23~17.33~17.30~17.40~17.10~601688~..."'
 const body2 = '"0~莱美药业~300006~9.00~8.74~8.80~9.10~8.70~300006~..."'
